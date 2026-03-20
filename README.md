@@ -131,3 +131,7 @@ Lint and format:
 uv run ruff check .
 uv run ruff format .
 ```
+
+## Alternative
+
+Also see [neutree-ai/openapi-to-skills](https://github.com/neutree-ai/openapi-to-skills) for a similar tool. I made mine because 1) I didn't see theirs until after, 2) I wanted fewer reference file hops. Theirs breaks out schemas each separate files, which if good if you're loading dozens of APIs and they share many schemas. However, when loading a single API it might require 5 file-reads to get needed information into context. When agents only need only 1 or 2 APIs per session, the method used by this project is faster and uses fewer tokens. When agents load many APIs with overlapping schemas, theirs is faster and uses fewer tokens.
