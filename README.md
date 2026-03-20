@@ -1,4 +1,4 @@
-# openapi2skill
+# OpenAPI 2 Skill
 
 Generate agent skills from OpenAPI specs. Creates [agentskills.io](https://agentskills.io) format documentation so AI agents can discover and call your API.
 
