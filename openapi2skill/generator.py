@@ -77,7 +77,9 @@ def generate_skill_md(
         if tag_group.description:
             lines.append(tag_group.description)
             lines.append("")
-        filename = tag_filenames.get(tag_group.name, f"{tag_group.name.lower()}_api_list.md")
+        filename = tag_filenames.get(
+            tag_group.name, f"{tag_group.name.lower()}_api_list.md"
+        )
         lines.append(f"**Endpoints:** reference/{filename}")
         lines.append("")
 

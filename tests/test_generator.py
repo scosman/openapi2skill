@@ -80,7 +80,9 @@ def test_generate_skill_md_basic() -> None:
             ],
         )
     ]
-    tag_groups = [TagGroup(name="Users", description="Manage users", endpoints=endpoints)]
+    tag_groups = [
+        TagGroup(name="Users", description="Manage users", endpoints=endpoints)
+    ]
     tag_filenames = {"Users": "users_api_list.md"}
 
     result = generator.generate_skill_md("Test preamble", tag_groups, tag_filenames)
@@ -117,7 +119,6 @@ def test_generate_skill_md_with_preamble() -> None:
 
     assert "# Custom API" in result
     assert "This is a custom preamble." in result
-
 
     assert "### Test" in result
 
@@ -563,6 +564,7 @@ def test_default_preamble_exists() -> None:
 
 # Tests for generate_tag_api_list_md
 
+
 def test_generate_tag_api_list_md_basic() -> None:
     """Test basic per-tag API list generation."""
     endpoints = [
@@ -579,7 +581,9 @@ def test_generate_tag_api_list_md_basic() -> None:
             ],
         )
     ]
-    tag_group = TagGroup(name="Users", description="User management", endpoints=endpoints)
+    tag_group = TagGroup(
+        name="Users", description="User management", endpoints=endpoints
+    )
     endpoint_filenames = {"GET_/users": "get_users.md"}
 
     result = generator.generate_tag_api_list_md(tag_group, endpoint_filenames)

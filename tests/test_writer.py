@@ -264,6 +264,7 @@ def test_write_output_empty_references(tmp_path: Path) -> None:
 
 # Tests for generate_tag_filename
 
+
 def test_generate_tag_filename_simple() -> None:
     """Test simple tag name to filename conversion."""
     result = writer.generate_tag_filename("Users")
@@ -307,6 +308,7 @@ def test_generate_tag_filename_uppercase() -> None:
 
 
 # Tests for assign_tag_filenames
+
 
 def test_assign_tag_filenames_no_collision() -> None:
     """Test unique tag filenames are assigned without modification."""
@@ -457,6 +459,7 @@ def test_assign_tag_filenames_multiple_collisions() -> None:
 
 # Tests for write_output with tag API lists
 
+
 def test_write_output_writes_tag_api_lists(tmp_path: Path) -> None:
     """Test that tag API list files are written to reference/."""
     base_dir = str(tmp_path / "output")
@@ -474,5 +477,9 @@ def test_write_output_writes_tag_api_lists(tmp_path: Path) -> None:
     ref_dir = Path(result) / "reference"
     assert (ref_dir / "users_api_list.md").exists()
     assert (ref_dir / "products_api_list.md").exists()
-    assert (ref_dir / "users_api_list.md").read_text() == "# Users API\n\nUser endpoints."
-    assert (ref_dir / "products_api_list.md").read_text() == "# Products API\n\nProduct endpoints."
+    assert (
+        ref_dir / "users_api_list.md"
+    ).read_text() == "# Users API\n\nUser endpoints."
+    assert (
+        ref_dir / "products_api_list.md"
+    ).read_text() == "# Products API\n\nProduct endpoints."

@@ -1,6 +1,13 @@
 """Parser for extracting structured endpoint data from OpenAPI specs."""
 
-from openapi2skill.models import Endpoint, Field, Parameter, RequestBody, Response, TagGroup
+from openapi2skill.models import (
+    Endpoint,
+    Field,
+    Parameter,
+    RequestBody,
+    Response,
+    TagGroup,
+)
 
 HTTP_METHODS = {"get", "post", "put", "delete", "patch"}
 
@@ -70,7 +77,9 @@ def group_by_tag(endpoints: list[Endpoint], spec: dict) -> list[TagGroup]:
     for tag in spec_tags:
         if tag in tag_groups:
             description = tag_descriptions.get(tag, "")
-            result.append(TagGroup(name=tag, description=description, endpoints=tag_groups[tag]))
+            result.append(
+                TagGroup(name=tag, description=description, endpoints=tag_groups[tag])
+            )
             seen_tags.add(tag)
 
     # Then: remaining tags in order of first encounter
@@ -78,7 +87,9 @@ def group_by_tag(endpoints: list[Endpoint], spec: dict) -> list[TagGroup]:
         tag = endpoint.tag
         if tag not in seen_tags:
             description = tag_descriptions.get(tag, "")
-            result.append(TagGroup(name=tag, description=description, endpoints=tag_groups[tag]))
+            result.append(
+                TagGroup(name=tag, description=description, endpoints=tag_groups[tag])
+            )
             seen_tags.add(tag)
 
     return result
