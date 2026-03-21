@@ -15,6 +15,7 @@ openapi2skill = "openapi2skill.__main__:main"
 dev = [
     "pytest>=8.0.0",
     "ruff>=0.8.0",
+    "ty>=0.0.24",
 ]
 
 [build-system]

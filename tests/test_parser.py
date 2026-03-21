@@ -391,6 +391,7 @@ def test_extract_request_body_with_enum() -> None:
 
     endpoints = parser.parse_endpoints(spec)
     rb = endpoints[0].request_body
+    assert rb is not None
 
     role_field = rb.fields[0]
     assert "One of: admin, user, guest" in role_field.constraints
@@ -422,6 +423,7 @@ def test_extract_request_body_with_example() -> None:
 
     endpoints = parser.parse_endpoints(spec)
     rb = endpoints[0].request_body
+    assert rb is not None
 
     assert rb.example == {"name": "Alice", "email": "alice@example.com"}
 
