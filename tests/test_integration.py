@@ -200,7 +200,7 @@ def test_pipeline_with_custom_preamble(tmp_path: Path) -> None:
 
     endpoints = parse_endpoints(spec)
     tag_groups = group_by_tag(endpoints, spec)
-    endpoint_filenames = assign_filenames(endpoints)
+    _ = assign_filenames(endpoints)
     tag_filenames = assign_tag_filenames(tag_groups)
 
     custom_preamble = """# My Custom API
