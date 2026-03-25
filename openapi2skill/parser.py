@@ -53,6 +53,31 @@ def _derive_schema_name(schema: dict, field_name: str) -> str:
     return "".join(segment.capitalize() for segment in field_name.split("_"))
 
 
+def _should_create_schema(schema: dict) -> bool:
+    """Return True if schema has enough structure to warrant a schema definition."""
+    if not schema or not isinstance(schema, dict):
+        return False
+    if "properties" in schema and schema["properties"]:
+        return True
+    if "x-schema-name" in schema:
+        return True
+    if schema.get("type") == "array":
+        items = schema.get("items", {})
+        if isinstance(items, dict):
+            if items.get("type") == "object" and items.get("properties"):
+                return True
+            if "x-schema-name" in items:
+                return True
+    return False
+
+
+def _render_type_with_schema(schema: dict, schema_name: str) -> str:
+    """Render type string using the schema name."""
+    if schema.get("type") == "array":
+        return f"array of {schema_name}"
+    return schema_name
+
+
 def parse_endpoints(spec: dict) -> list[Endpoint]:
     """Extract all endpoints from a resolved OpenAPI spec.
 
@@ -144,8 +169,10 @@ def _extract_endpoint(
     description = operation.get("description", "")
     tag = _extract_tag(operation)
     parameters = _extract_parameters(path_item, operation)
-    request_body = _extract_request_body(operation.get("requestBody"))
-    responses = _extract_responses(operation.get("responses", {}))
+
+    collector = SchemaCollector()
+    request_body = _extract_request_body(operation.get("requestBody"), collector)
+    responses = _extract_responses(operation.get("responses", {}), collector)
 
     return Endpoint(
         path=path,
@@ -156,7 +183,7 @@ def _extract_endpoint(
         parameters=parameters,
         request_body=request_body,
         responses=responses,
-        schemas=[],
+        schemas=collector.schemas,
     )
 
 
@@ -244,7 +271,9 @@ def _param_to_parameter(param: dict) -> Parameter:
     )
 
 
-def _extract_request_body(request_body: dict | None) -> RequestBody | None:
+def _extract_request_body(
+    request_body: dict | None, collector: SchemaCollector | None = None
+) -> RequestBody | None:
     """Extract RequestBody from OpenAPI requestBody spec."""
     if not request_body or not isinstance(request_body, dict):
         return None
@@ -265,7 +294,7 @@ def _extract_request_body(request_body: dict | None) -> RequestBody | None:
     if not schema:
         return None
 
-    fields = _schema_to_fields(schema)
+    fields = _schema_to_fields(schema, "", 0, collector)
     example = json_content.get("example") or schema.get("example")
 
     return RequestBody(
@@ -275,7 +304,9 @@ def _extract_request_body(request_body: dict | None) -> RequestBody | None:
     )
 
 
-def _extract_responses(responses: dict) -> list[Response]:
+def _extract_responses(
+    responses: dict, collector: SchemaCollector | None = None
+) -> list[Response]:
     """Extract Response objects from OpenAPI responses spec."""
     result = []
 
@@ -293,7 +324,7 @@ def _extract_responses(responses: dict) -> list[Response]:
         if json_content:
             schema = json_content.get("schema", {})
             if schema:
-                fields = _schema_to_fields(schema)
+                fields = _schema_to_fields(schema, "", 0, collector)
                 example = json_content.get("example") or schema.get("example")
 
         result.append(
@@ -308,13 +339,19 @@ def _extract_responses(responses: dict) -> list[Response]:
     return result
 
 
-def _schema_to_fields(schema: dict, prefix: str = "", depth: int = 0) -> list[Field]:
+def _schema_to_fields(
+    schema: dict,
+    prefix: str = "",
+    depth: int = 0,
+    collector: SchemaCollector | None = None,
+) -> list[Field]:
     """Convert an OpenAPI schema to a list of Field objects.
 
     Args:
         schema: OpenAPI schema dict
         prefix: Prefix for nested field names (dot notation)
         depth: Current nesting depth (limit of 3)
+        collector: Optional SchemaCollector to register complex schemas
 
     Returns:
         List of Field objects
@@ -325,7 +362,7 @@ def _schema_to_fields(schema: dict, prefix: str = "", depth: int = 0) -> list[Fi
     # Handle allOf by merging all sub-schemas
     if "allOf" in schema:
         merged = _merge_all_of(schema["allOf"])
-        return _schema_to_fields(merged, prefix, depth)
+        return _schema_to_fields(merged, prefix, depth, collector)
 
     # Handle oneOf/anyOf - return a single field describing the union
     if "oneOf" in schema or "anyOf" in schema:
@@ -333,7 +370,17 @@ def _schema_to_fields(schema: dict, prefix: str = "", depth: int = 0) -> list[Fi
         type_names = []
         for v in variants:
             if isinstance(v, dict):
-                type_names.append(_render_type(v))
+                if collector is not None and _should_create_schema(v):
+                    schema_name = _derive_schema_name(
+                        v, prefix.rstrip(".") if prefix else "variant"
+                    )
+                    schema_fields = _schema_to_fields(v, "", 0, collector)
+                    final_name = collector.register(
+                        schema_name, v.get("description", ""), schema_fields
+                    )
+                    type_names.append(final_name)
+                else:
+                    type_names.append(_render_type(v))
         union_type = f"one of: {', '.join(type_names)}" if type_names else "any"
         return [
             Field(
@@ -345,9 +392,28 @@ def _schema_to_fields(schema: dict, prefix: str = "", depth: int = 0) -> list[Fi
             )
         ]
 
-    # For non-object schemas, return a single field describing the type
+    # For non-object schemas (including arrays), handle schema registration
     schema_type = schema.get("type", "object")
     if schema_type != "object":
+        if schema_type == "array" and collector is not None:
+            items = schema.get("items", {})
+            if isinstance(items, dict) and _should_create_schema(items):
+                schema_name = _derive_schema_name(
+                    items, prefix.rstrip(".") if prefix else "item"
+                )
+                schema_fields = _schema_to_fields(items, "", 0, collector)
+                final_name = collector.register(
+                    schema_name, items.get("description", ""), schema_fields
+                )
+                return [
+                    Field(
+                        name=prefix.rstrip(".") if prefix else "value",
+                        type=f"array of {final_name}",
+                        required=True,
+                        description=schema.get("description", ""),
+                        constraints=_extract_constraints(schema),
+                    )
+                ]
         return [
             Field(
                 name=prefix.rstrip(".") if prefix else "value",
@@ -379,8 +445,26 @@ def _schema_to_fields(schema: dict, prefix: str = "", depth: int = 0) -> list[Fi
         # depth=0 is root level, depth=1 is first nesting, etc.
         # Stop flattening when depth >= 2 to limit to 3 levels total
         if prop_type == "object" and "properties" in prop_schema and depth < 2:
-            nested_fields = _schema_to_fields(prop_schema, f"{field_name}.", depth + 1)
+            nested_fields = _schema_to_fields(
+                prop_schema, f"{field_name}.", depth + 1, collector
+            )
             fields.extend(nested_fields)
+        elif collector is not None and _should_create_schema(prop_schema):
+            schema_name = _derive_schema_name(prop_schema, prop_name)
+            schema_fields = _schema_to_fields(prop_schema, "", 0, collector)
+            final_name = collector.register(
+                schema_name, prop_schema.get("description", ""), schema_fields
+            )
+            rendered_type = _render_type_with_schema(prop_schema, final_name)
+            fields.append(
+                Field(
+                    name=field_name,
+                    type=rendered_type,
+                    required=is_required,
+                    description=description,
+                    constraints=constraints,
+                )
+            )
         else:
             fields.append(
                 Field(

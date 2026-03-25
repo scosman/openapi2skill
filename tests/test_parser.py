@@ -1252,3 +1252,369 @@ def test_endpoint_has_schemas_field() -> None:
     endpoints = parser.parse_endpoints(spec)
     assert hasattr(endpoints[0], "schemas")
     assert endpoints[0].schemas == []
+
+
+def test_should_create_schema_with_properties() -> None:
+    """Test _should_create_schema returns True for schema with properties."""
+    schema = {"type": "object", "properties": {"id": {"type": "integer"}}}
+    assert parser._should_create_schema(schema) is True
+
+
+def test_should_create_schema_with_x_schema_name() -> None:
+    """Test _should_create_schema returns True for schema with x-schema-name."""
+    schema = {"x-schema-name": "User", "type": "object"}
+    assert parser._should_create_schema(schema) is True
+
+
+def test_should_create_schema_array_with_object_items() -> None:
+    """Test _should_create_schema returns True for array with object items."""
+    schema = {
+        "type": "array",
+        "items": {"type": "object", "properties": {"id": {"type": "integer"}}},
+    }
+    assert parser._should_create_schema(schema) is True
+
+
+def test_should_create_schema_bare_object() -> None:
+    """Test _should_create_schema returns False for bare object without properties."""
+    schema = {"type": "object"}
+    assert parser._should_create_schema(schema) is False
+
+
+def test_should_create_schema_empty_properties() -> None:
+    """Test _should_create_schema returns False for object with empty properties."""
+    schema = {"type": "object", "properties": {}}
+    assert parser._should_create_schema(schema) is False
+
+
+def test_render_type_with_schema_object() -> None:
+    """Test _render_type_with_schema for object type."""
+    schema = {"type": "object"}
+    assert parser._render_type_with_schema(schema, "User") == "User"
+
+
+def test_render_type_with_schema_array() -> None:
+    """Test _render_type_with_schema for array type."""
+    schema = {"type": "array", "items": {"type": "object"}}
+    assert parser._render_type_with_schema(schema, "User") == "array of User"
+
+
+def test_schema_to_fields_with_collector_named_ref() -> None:
+    """Test schema with x-schema-name registers schema and uses name in type."""
+    collector = parser.SchemaCollector()
+    schema = {
+        "type": "object",
+        "x-schema-name": "TaskMetadata",
+        "description": "Task metadata",
+        "properties": {"id": {"type": "integer"}},
+    }
+
+    fields = parser._schema_to_fields(schema, "", 0, collector)
+
+    assert len(fields) == 1
+    assert fields[0].name == "id"
+    assert len(collector.schemas) == 0  # Root schema is not registered, only nested
+
+
+def test_schema_to_fields_with_collector_inline_object() -> None:
+    """Test inline object at depth limit gets PascalCase name from field name."""
+    collector = parser.SchemaCollector()
+    schema = {
+        "type": "object",
+        "properties": {
+            "level1": {
+                "type": "object",
+                "properties": {
+                    "level2": {
+                        "type": "object",
+                        "properties": {
+                            "level3": {
+                                "type": "object",
+                                "description": "Deep nested object",
+                                "properties": {"value": {"type": "string"}},
+                            }
+                        },
+                    }
+                },
+            }
+        },
+    }
+
+    _ = parser._schema_to_fields(schema, "", 0, collector)
+
+    assert len(collector.schemas) == 1
+    assert collector.schemas[0].name == "Level3"
+
+
+def test_schema_to_fields_array_of_objects() -> None:
+    """Test array of objects produces 'array of SchemaName' type."""
+    collector = parser.SchemaCollector()
+    schema = {
+        "type": "array",
+        "description": "List of Q&A items",
+        "items": {
+            "type": "object",
+            "properties": {
+                "question": {"type": "string"},
+                "answer": {"type": "string"},
+            },
+        },
+    }
+
+    fields = parser._schema_to_fields(schema, "questions_and_answers", 0, collector)
+
+    assert len(collector.schemas) == 1
+    assert collector.schemas[0].name == "QuestionsAndAnswers"
+    assert fields[0].type == "array of QuestionsAndAnswers"
+
+
+def test_schema_to_fields_transitive() -> None:
+    """Test schema A referencing schema B includes both in collector."""
+    collector = parser.SchemaCollector()
+    schema = {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "x-schema-name": "User",
+            "properties": {
+                "name": {"type": "string"},
+                "addresses": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "x-schema-name": "Address",
+                        "properties": {
+                            "city": {"type": "string"},
+                            "zip": {"type": "string"},
+                        },
+                    },
+                },
+            },
+        },
+    }
+
+    parser._schema_to_fields(schema, "", 0, collector)
+
+    schema_names = {s.name for s in collector.schemas}
+    assert "User" in schema_names
+    assert "Address" in schema_names
+
+
+def test_schema_to_fields_no_properties_object() -> None:
+    """Test bare object without properties stays as 'object', no schema created."""
+    collector = parser.SchemaCollector()
+    schema = {
+        "type": "object",
+        "properties": {
+            "metadata": {"type": "object", "description": "Free-form metadata"}
+        },
+    }
+
+    fields = parser._schema_to_fields(schema, "", 0, collector)
+
+    assert len(collector.schemas) == 0
+    metadata_field = next(f for f in fields if f.name == "metadata")
+    assert metadata_field.type == "object"
+
+
+def test_schema_to_fields_oneof_with_object_variants() -> None:
+    """Test oneOf with object variants registers each variant schema."""
+    collector = parser.SchemaCollector()
+    schema = {
+        "oneOf": [
+            {
+                "x-schema-name": "SuccessResult",
+                "type": "object",
+                "properties": {"data": {"type": "string"}},
+            },
+            {
+                "x-schema-name": "ErrorResult",
+                "type": "object",
+                "properties": {"error": {"type": "string"}},
+            },
+            {"type": "null"},
+        ]
+    }
+
+    fields = parser._schema_to_fields(schema, "", 0, collector)
+
+    schema_names = {s.name for s in collector.schemas}
+    assert "SuccessResult" in schema_names
+    assert "ErrorResult" in schema_names
+    assert "SuccessResult" in fields[0].type
+    assert "ErrorResult" in fields[0].type
+
+
+def test_schema_to_fields_without_collector() -> None:
+    """Test passing collector=None produces existing behavior."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "questions": {
+                "type": "array",
+                "items": {"type": "object", "properties": {"id": {"type": "integer"}}},
+            }
+        },
+    }
+
+    fields = parser._schema_to_fields(schema, "", 0, None)
+
+    assert len(fields) == 1
+    assert fields[0].type == "array of object"
+
+
+def test_extract_endpoint_with_schemas() -> None:
+    """Test full endpoint extraction produces schemas."""
+    spec = {
+        "openapi": "3.0.0",
+        "paths": {
+            "/tasks": {
+                "post": {
+                    "requestBody": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "task_metadata": {
+                                            "type": "object",
+                                            "properties": {
+                                                "priority": {"type": "integer"}
+                                            },
+                                        }
+                                    },
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Success",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "id": {"type": "integer"},
+                                                "name": {"type": "string"},
+                                            },
+                                        },
+                                    }
+                                }
+                            },
+                        }
+                    },
+                }
+            }
+        },
+    }
+
+    endpoints = parser.parse_endpoints(spec)
+
+    assert len(endpoints[0].schemas) >= 1
+    schema_names = {s.name for s in endpoints[0].schemas}
+    assert "TaskMetadata" in schema_names or "Item" in schema_names
+
+
+def test_extract_request_body_uses_collector() -> None:
+    """Test request body schemas are collected."""
+    collector = parser.SchemaCollector()
+    request_body = {
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"name": {"type": "string"}},
+                    },
+                }
+            }
+        }
+    }
+
+    parser._extract_request_body(request_body, collector)
+
+    assert len(collector.schemas) == 1
+    assert collector.schemas[0].name == "Item"
+
+
+def test_extract_responses_uses_collector() -> None:
+    """Test response schemas are collected."""
+    collector = parser.SchemaCollector()
+    responses = {
+        "200": {
+            "description": "Success",
+            "content": {
+                "application/json": {
+                    "schema": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {"id": {"type": "integer"}},
+                        },
+                    }
+                }
+            },
+        }
+    }
+
+    parser._extract_responses(responses, collector)
+
+    assert len(collector.schemas) == 1
+    assert collector.schemas[0].name == "Item"
+
+
+def test_schema_dedup_across_request_and_response() -> None:
+    """Test identical schemas in request and response are deduplicated."""
+    spec = {
+        "openapi": "3.0.0",
+        "paths": {
+            "/items": {
+                "post": {
+                    "requestBody": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "array",
+                                    "items": {
+                                        "type": "object",
+                                        "properties": {
+                                            "id": {"type": "integer"},
+                                            "name": {"type": "string"},
+                                        },
+                                    },
+                                }
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "description": "Success",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "array",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "id": {"type": "integer"},
+                                                "name": {"type": "string"},
+                                            },
+                                        },
+                                    }
+                                }
+                            },
+                        }
+                    },
+                }
+            }
+        },
+    }
+
+    endpoints = parser.parse_endpoints(spec)
+
+    assert len(endpoints[0].schemas) == 1
+    assert endpoints[0].schemas[0].name == "Item"
