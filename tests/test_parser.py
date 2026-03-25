@@ -1779,3 +1779,120 @@ def test_nested_oneof_in_object_property() -> None:
     output_field = next(f for f in fields if f.name == "output")
     assert "Source" in output_field.type
     assert "or null" in output_field.type
+
+
+def test_oneof_with_resolved_refs_registers_named_schemas():
+    """Test that resolved $ref variants in oneOf get proper schema names."""
+    from openapi2skill.resolver import resolve_refs
+    from openapi2skill.parser import _schema_to_fields, SchemaCollector
+
+    spec = {
+        "components": {
+            "schemas": {
+                "KilnAgentRunConfigProperties": {
+                    "type": "object",
+                    "properties": {
+                        "model": {"type": "string"},
+                        "temperature": {"type": "number"},
+                    },
+                },
+                "McpRunConfigProperties": {
+                    "type": "object",
+                    "properties": {
+                        "server_url": {"type": "string"},
+                        "timeout": {"type": "integer"},
+                    },
+                },
+            }
+        },
+        "paths": {
+            "/test": {
+                "post": {
+                    "requestBody": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "oneOf": [
+                                        {
+                                            "$ref": "#/components/schemas/KilnAgentRunConfigProperties"
+                                        },
+                                        {
+                                            "$ref": "#/components/schemas/McpRunConfigProperties"
+                                        },
+                                    ]
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+    }
+
+    resolved = resolve_refs(spec)
+
+    schema = resolved["paths"]["/test"]["post"]["requestBody"]["content"][
+        "application/json"
+    ]["schema"]
+
+    collector = SchemaCollector()
+    fields = _schema_to_fields(schema, "", 0, collector)
+
+    assert len(fields) == 1
+    field_type = fields[0].type
+    assert "object, object" not in field_type, f"Got: {field_type}"
+    assert "KilnAgentRunConfigProperties" in field_type, f"Got: {field_type}"
+    assert "McpRunConfigProperties" in field_type, f"Got: {field_type}"
+    assert len(collector.schemas) == 2
+
+
+def test_nested_oneof_field_in_object_registers_schemas():
+    """Test that oneOf field inside an object registers variant schemas."""
+    from openapi2skill.resolver import resolve_refs
+    from openapi2skill.parser import _schema_to_fields, SchemaCollector
+
+    spec = {
+        "components": {
+            "schemas": {
+                "TaskRunConfig": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "run_config_properties": {
+                            "oneOf": [
+                                {
+                                    "$ref": "#/components/schemas/KilnAgentRunConfigProperties"
+                                },
+                                {"$ref": "#/components/schemas/McpRunConfigProperties"},
+                            ]
+                        },
+                    },
+                },
+                "KilnAgentRunConfigProperties": {
+                    "type": "object",
+                    "properties": {"model": {"type": "string"}},
+                },
+                "McpRunConfigProperties": {
+                    "type": "object",
+                    "properties": {"server_url": {"type": "string"}},
+                },
+            }
+        }
+    }
+
+    resolved = resolve_refs(spec)
+    schema = resolved["components"]["schemas"]["TaskRunConfig"]
+
+    collector = SchemaCollector()
+    fields = _schema_to_fields(schema, "", 0, collector)
+
+    prop_field = next((f for f in fields if f.name == "run_config_properties"), None)
+    assert prop_field is not None
+
+    assert "object, object" not in prop_field.type, f"Got: {prop_field.type}"
+    assert "KilnAgentRunConfigProperties" in prop_field.type, f"Got: {prop_field.type}"
+    assert "McpRunConfigProperties" in prop_field.type, f"Got: {prop_field.type}"
+
+    schema_names = [s.name for s in collector.schemas]
+    assert "KilnAgentRunConfigProperties" in schema_names
+    assert "McpRunConfigProperties" in schema_names
