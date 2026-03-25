@@ -59,6 +59,8 @@ def _should_create_schema(schema: dict) -> bool:
     """Return True if schema has enough structure to warrant a schema definition."""
     if not schema or not isinstance(schema, dict):
         return False
+    if schema.get("type") == "null":
+        return False
     if "properties" in schema and schema["properties"]:
         return True
     if "x-schema-name" in schema:
@@ -370,25 +372,46 @@ def _schema_to_fields(
     if "oneOf" in schema or "anyOf" in schema:
         variants = schema.get("oneOf") or schema.get("anyOf", [])
         type_names = []
+        has_null = False
+
         for v in variants:
-            if isinstance(v, dict):
-                if collector is not None and _should_create_schema(v):
+            if not isinstance(v, dict):
+                continue
+            if v.get("type") == "null":
+                has_null = True
+                continue
+
+            if collector is not None:
+                if (
+                    v.get("type") == "object"
+                    or "properties" in v
+                    or "x-schema-name" in v
+                ):
                     schema_name = _derive_schema_name(
                         v, prefix.rstrip(".") if prefix else "variant"
                     )
                     schema_fields = _schema_to_fields(v, "", 0, collector)
-                    final_name = collector.register(
-                        schema_name, v.get("description", ""), schema_fields
-                    )
-                    type_names.append(final_name)
+                    if schema_fields:
+                        final_name = collector.register(
+                            schema_name, v.get("description", ""), schema_fields
+                        )
+                        type_names.append(final_name)
+                    else:
+                        type_names.append(_render_type(v))
                 else:
                     type_names.append(_render_type(v))
+            else:
+                type_names.append(_render_type(v))
+
         union_type = f"one of: {', '.join(type_names)}" if type_names else "any"
+        if has_null:
+            union_type = f"{union_type} or null"
+
         return [
             Field(
                 name=prefix.rstrip(".") if prefix else "value",
                 type=union_type,
-                required=True,
+                required=not has_null,
                 description=schema.get("description", ""),
                 constraints=_extract_constraints(schema),
             )
@@ -446,7 +469,29 @@ def _schema_to_fields(
         # Handle nested objects - flatten with dot notation up to depth limit of 3
         # depth=0 is root level, depth=1 is first nesting, etc.
         # Stop flattening when depth >= 2 to limit to 3 levels total
-        if prop_type == "object" and "properties" in prop_schema and depth < 2:
+        if "oneOf" in prop_schema or "anyOf" in prop_schema:
+            oneof_fields = _schema_to_fields(prop_schema, "", 0, collector)
+            if oneof_fields:
+                fields.append(
+                    Field(
+                        name=field_name,
+                        type=oneof_fields[0].type,
+                        required=is_required,
+                        description=description,
+                        constraints=constraints,
+                    )
+                )
+            else:
+                fields.append(
+                    Field(
+                        name=field_name,
+                        type=_render_type(prop_schema),
+                        required=is_required,
+                        description=description,
+                        constraints=constraints,
+                    )
+                )
+        elif prop_type == "object" and "properties" in prop_schema and depth < 2:
             nested_fields = _schema_to_fields(
                 prop_schema, f"{field_name}.", depth + 1, collector
             )
@@ -512,13 +557,21 @@ def _render_type(schema: dict) -> str:
     if not schema or not isinstance(schema, dict):
         return "any"
 
-    # Handle oneOf/anyOf
     if "oneOf" in schema or "anyOf" in schema:
         variants = schema.get("oneOf") or schema.get("anyOf", [])
-        type_names = [_render_type(v) for v in variants if isinstance(v, dict)]
-        return f"one of: {', '.join(type_names)}" if type_names else "any"
+        type_names = []
+        has_null = False
+        for v in variants:
+            if isinstance(v, dict):
+                if v.get("type") == "null":
+                    has_null = True
+                else:
+                    type_names.append(_render_type(v))
+        result = f"one of: {', '.join(type_names)}" if type_names else "any"
+        if has_null:
+            result = f"{result} or null"
+        return result
 
-    # Handle allOf
     if "allOf" in schema:
         merged = _merge_all_of(schema["allOf"])
         return _render_type(merged)

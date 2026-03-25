@@ -699,7 +699,7 @@ def test_schema_to_fields_oneOf() -> None:
 
 
 def test_schema_to_fields_anyOf() -> None:
-    """Test anyOf schema handling."""
+    """Test anyOf schema handling with null variant."""
     schema = {
         "anyOf": [
             {"type": "string"},
@@ -710,7 +710,8 @@ def test_schema_to_fields_anyOf() -> None:
     fields = parser._schema_to_fields(schema)
 
     assert len(fields) == 1
-    assert "one of: string, null" in fields[0].type
+    assert "one of: string or null" in fields[0].type
+    assert fields[0].required is False
 
 
 def test_schema_to_fields_enum() -> None:
@@ -1284,6 +1285,12 @@ def test_should_create_schema_empty_properties() -> None:
     assert parser._should_create_schema(schema) is False
 
 
+def test_should_create_schema_null_type() -> None:
+    """Test _should_create_schema returns False for null type."""
+    schema = {"type": "null"}
+    assert parser._should_create_schema(schema) is False
+
+
 def test_render_type_with_schema_object() -> None:
     """Test _render_type_with_schema for object type."""
     schema = {"type": "object"}
@@ -1615,3 +1622,160 @@ def test_schema_dedup_across_request_and_response() -> None:
 
     assert len(endpoints[0].schemas) == 1
     assert endpoints[0].schemas[0].name == "Item"
+
+
+def test_oneof_with_null_variant_nullable() -> None:
+    """Test oneOf with null variant marks field as nullable (not required)."""
+    schema = {
+        "oneOf": [
+            {"type": "string"},
+            {"type": "null"},
+        ]
+    }
+
+    fields = parser._schema_to_fields(schema)
+
+    assert len(fields) == 1
+    assert "one of: string or null" in fields[0].type
+    assert fields[0].required is False
+
+
+def test_oneof_with_object_and_null_variants() -> None:
+    """Test oneOf with object variant and null creates schema and marks nullable."""
+    collector = parser.SchemaCollector()
+    schema = {
+        "oneOf": [
+            {
+                "type": "object",
+                "x-schema-name": "Source",
+                "properties": {"url": {"type": "string"}},
+            },
+            {"type": "null"},
+        ]
+    }
+
+    fields = parser._schema_to_fields(schema, "source", 0, collector)
+
+    assert len(collector.schemas) == 1
+    assert collector.schemas[0].name == "Source"
+    assert "Source" in fields[0].type
+    assert "or null" in fields[0].type
+    assert fields[0].required is False
+
+
+def test_oneof_multiple_object_variants_registers_schemas() -> None:
+    """Test oneOf with multiple object variants registers each as a schema."""
+    collector = parser.SchemaCollector()
+    schema = {
+        "oneOf": [
+            {
+                "type": "object",
+                "x-schema-name": "TextContent",
+                "properties": {"text": {"type": "string"}},
+            },
+            {
+                "type": "object",
+                "x-schema-name": "ImageContent",
+                "properties": {"url": {"type": "string"}},
+            },
+            {
+                "type": "object",
+                "x-schema-name": "VideoContent",
+                "properties": {"video_url": {"type": "string"}},
+            },
+        ]
+    }
+
+    fields = parser._schema_to_fields(schema, "content", 0, collector)
+
+    schema_names = {s.name for s in collector.schemas}
+    assert "TextContent" in schema_names
+    assert "ImageContent" in schema_names
+    assert "VideoContent" in schema_names
+    assert "TextContent" in fields[0].type
+    assert "ImageContent" in fields[0].type
+    assert "VideoContent" in fields[0].type
+
+
+def test_oneof_inline_object_variants_derives_names() -> None:
+    """Test oneOf with inline object variants derives names from field prefix."""
+    collector = parser.SchemaCollector()
+    schema = {
+        "oneOf": [
+            {
+                "type": "object",
+                "properties": {
+                    "type": {"type": "string", "const": "success"},
+                    "data": {"type": "string"},
+                },
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "type": {"type": "string", "const": "error"},
+                    "message": {"type": "string"},
+                },
+            },
+        ]
+    }
+
+    fields = parser._schema_to_fields(schema, "result.", 0, collector)
+
+    assert len(collector.schemas) == 2
+    schema_names = {s.name for s in collector.schemas}
+    assert "Result" in schema_names
+    assert fields[0].required is True
+
+
+def test_oneof_null_only_returns_any() -> None:
+    """Test oneOf with only null variant returns 'any or null'."""
+    schema = {
+        "oneOf": [
+            {"type": "null"},
+        ]
+    }
+
+    fields = parser._schema_to_fields(schema)
+
+    assert len(fields) == 1
+    assert fields[0].type == "any or null"
+    assert fields[0].required is False
+
+
+def test_render_type_oneof_with_null() -> None:
+    """Test _render_type handles null in oneOf correctly."""
+    schema = {
+        "oneOf": [
+            {"type": "string"},
+            {"type": "null"},
+        ]
+    }
+    assert parser._render_type(schema) == "one of: string or null"
+
+
+def test_nested_oneof_in_object_property() -> None:
+    """Test oneOf nested inside object property expands object variant."""
+    collector = parser.SchemaCollector()
+    schema = {
+        "type": "object",
+        "properties": {
+            "output": {
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "x-schema-name": "Source",
+                        "properties": {"url": {"type": "string"}},
+                    },
+                    {"type": "null"},
+                ]
+            }
+        },
+    }
+
+    fields = parser._schema_to_fields(schema, "", 0, collector)
+
+    assert len(collector.schemas) == 1
+    assert collector.schemas[0].name == "Source"
+    output_field = next(f for f in fields if f.name == "output")
+    assert "Source" in output_field.type
+    assert "or null" in output_field.type
