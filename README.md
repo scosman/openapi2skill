@@ -1,19 +1,19 @@
 # OpenAPI 2 Skill
 ### Generate agent skills from OpenAPI API definitions
 
-Creates [agentskills.io](https://agentskills.io) format documentation/skills so AI agents can discover and call your API.
+Creates [agentskills.io](https://agentskills.io) format documentation/skills for any OpenAPI compatible API. This allows AI agents can discover and call your API.
 
 [![CI](https://github.com/scosman/openapi2skill/actions/workflows/ci.yml/badge.svg)](https://github.com/scosman/openapi2skill/actions/workflows/ci.yml)
 
-## Why Skills and not MCP?
+## Why Skills and not MCP? Progressive Disclosure.
 
 OpenAPI specs can have thousands of endpoints. MCP wrappers immediately flood your context with too many tools when your agent probably only needs a few of them. With an Agent Skill we can have progressive disclosure:
 
  - Describe the API's purpose and tags in the main SKILL.md
  - List available APIs for each tag in `references/TAG_api_list.md`
- - Give detailed API spec for each API in `references/get_user.md` (see [example](#example-api-definition) below)
+ - Give detailed API spec for each API in reference files, for example: `references/get_user.md`. See [example](#example-api-definition) below.
 
-Your agent only loads the information is needs, not the entire API. Your agent can call these APIs using any tool you like, often just `curl`.
+Your agent only loads the information is needs, not the entire API. Your agent can call these APIs using any tool you like, often just `curl`, sometimes a custom MCP call (one tool for all API endpoints).
 
 ## Installation
 
@@ -73,13 +73,17 @@ output/
 
 Contains a summary table of all endpoints grouped by tag, with links to detailed reference files.
 
-### Reference Files
+### Reference Files For Endpoints
 
-Each endpoint gets a detailed markdown file with:
+The tool generates a markdown file describing each endpoint in detail. These are automatically generated from your `openapi.json`, there's no need to add additional documentation.
+
+Fields:
+- Metadata: path, http method, summary, description, and tags
 - Path and query parameters
 - Request body schema with field types and constraints
 - Response schemas for each status code
 - Examples (when available in the spec)
+
 
 #### Example API Definition `references/get_users.md`
 
@@ -124,20 +128,14 @@ Retrieve a user's profile by their ID.
 
 ## Development
 
-Run tests:
+Run tests, lint, format, typechecking, etc:
 ```bash
-uv run pytest
-```
-
-Lint and format:
-```bash
-uv run ruff check .
-uv run ruff format .
+uv run ./checks.sh
 ```
 
 ## Alternative
 
 Also see [neutree-ai/openapi-to-skills](https://github.com/neutree-ai/openapi-to-skills) for a similar tool. I made mine because 1) I didn't see theirs until after, 2) I wanted fewer reference file hops. 
 
-Theirs breaks out each schema into separate files. Loading a single API it might require 5 file-reads to get needed schemas into context. Which approach is better depends on your usage. When agents only need only 1 or 2 APIs per session, the method used by this project is faster and uses fewer tokens. When agents load many APIs with overlapping schemas, theirs is faster and uses fewer tokens.
+Theirs breaks out each schema into separate files. Loading a single API it might require many serial file-reads to get needed schemas into context. Which approach is better depends on your usage. When agents only need only 1 or 2 APIs per session, the method used by this project is faster and uses fewer tokens. When agents load many APIs with overlapping schemas, theirs is faster and uses fewer tokens.
 
