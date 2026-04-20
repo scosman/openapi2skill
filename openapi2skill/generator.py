@@ -211,7 +211,10 @@ def generate_reference_md(endpoint: Endpoint) -> str:
             lines.append(f"**Content Type:** `{endpoint.request_body.content_type}`")
             lines.append("")
 
-            if endpoint.request_body.fields:
+            if endpoint.request_body.body_type and not endpoint.request_body.fields:
+                lines.append(f"**Body:** {endpoint.request_body.body_type}")
+                lines.append("")
+            elif endpoint.request_body.fields:
                 lines.append("|Field|Type|Required|Description|")
                 lines.append("|-|-|-|-|")
                 for field in endpoint.request_body.fields:
@@ -246,7 +249,10 @@ def generate_reference_md(endpoint: Endpoint) -> str:
                 lines.append(response.description)
                 lines.append("")
 
-            if response.fields:
+            if response.body_type and not response.fields:
+                lines.append(f"**Body:** {response.body_type}")
+                lines.append("")
+            elif response.fields:
                 lines.append("|Field|Type|Description|")
                 lines.append("|-|-|-|")
                 for field in response.fields:

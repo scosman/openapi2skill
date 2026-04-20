@@ -1213,3 +1213,67 @@ def test_query_param_with_constraints() -> None:
     result = generator.generate_reference_md(endpoint)
 
     assert "|limit|integer|No|20|Max results. 1-100|" in result
+
+
+# ---------------------------------------------------------------------------
+# body_type rendering (top-level non-object bodies, set by the parser when a
+# response/request is e.g. `list[Spec]`). See test_parser.py for the parser
+# half of this behavior.
+# ---------------------------------------------------------------------------
+
+
+def test_response_body_type_renders_as_body_line_not_field_table() -> None:
+    """`body_type="array of Spec"` with empty fields should render as a sentence."""
+    endpoint = Endpoint(
+        path="/specs",
+        method="GET",
+        summary="List specs",
+        description="",
+        tag="Specs",
+        tags=["Specs"],
+        parameters=[],
+        request_body=None,
+        responses=[
+            Response(
+                status_code="200",
+                description="OK",
+                fields=[],
+                example=None,
+                body_type="array of Spec",
+            )
+        ],
+        schemas=[],
+    )
+
+    result = generator.generate_reference_md(endpoint)
+
+    assert "**Body:** array of Spec" in result
+    # The old phantom `|value|array of Spec||` row must be gone.
+    assert "|value|" not in result
+    assert "|Field|Type|Description|" not in result
+
+
+def test_request_body_type_renders_as_body_line_not_field_table() -> None:
+    """Same semantics for request bodies that are top-level non-objects."""
+    endpoint = Endpoint(
+        path="/bulk",
+        method="POST",
+        summary="Bulk create",
+        description="",
+        tag="Items",
+        tags=["Items"],
+        parameters=[],
+        request_body=RequestBody(
+            content_type="application/json",
+            fields=[],
+            example=None,
+            body_type="array of Item",
+        ),
+        responses=[],
+        schemas=[],
+    )
+
+    result = generator.generate_reference_md(endpoint)
+
+    assert "**Body:** array of Item" in result
+    assert "|value|" not in result

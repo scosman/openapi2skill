@@ -56,21 +56,28 @@ def _derive_schema_name(schema: dict, field_name: str) -> str:
 
 
 def _should_create_schema(schema: dict) -> bool:
-    """Return True if schema has enough structure to warrant a schema definition."""
+    """Return True if schema has enough structure to warrant a schema definition.
+
+    Only **object** schemas get their own ``### SchemaName`` section. A named
+    array (Pydantic ``RootModel`` list wrapper) or named primitive/enum must NOT
+    register a wrapper schema — doing so synthesizes a phantom ``{value: ...}``
+    field that doesn't exist on the wire. Callers inline those types at the use
+    site instead.
+    """
     if not schema or not isinstance(schema, dict):
         return False
     if schema.get("type") == "null":
         return False
     if "properties" in schema and schema["properties"]:
         return True
-    if "x-schema-name" in schema:
+    if "x-schema-name" in schema and schema.get("type") == "object":
         return True
     if schema.get("type") == "array":
         items = schema.get("items", {})
         if isinstance(items, dict):
             if items.get("type") == "object" and items.get("properties"):
                 return True
-            if "x-schema-name" in items:
+            if "x-schema-name" in items and items.get("type") in (None, "object"):
                 return True
     return False
 
@@ -288,6 +295,44 @@ def _param_to_parameter(param: dict) -> Parameter:
     )
 
 
+def _extract_body_schema(
+    schema: dict, collector: SchemaCollector | None
+) -> tuple[list[Field], str | None]:
+    """Split a top-level body schema into (fields, body_type).
+
+    For object bodies, returns the field list and ``body_type=None`` — the
+    generator renders a field table as before.
+
+    For **non-object** top-level bodies (e.g., ``list[Spec]`` exposed as a
+    Pydantic ``RootModel`` that serializes as a bare array), returns an empty
+    field list and a ``body_type`` string like ``"array of Spec"``. The old
+    behavior synthesized a phantom ``value`` field here, which made the
+    generated doc claim responses were wrapped like ``{"value": [...]}`` when
+    on the wire they were bare arrays.
+
+    Inner object items still get registered in the collector so they appear
+    in the ``## Schemas`` section below.
+    """
+    if not schema:
+        return [], None
+
+    schema_type = schema.get("type", "object")
+    if schema_type == "object":
+        return _schema_to_fields(schema, "", 0, collector), None
+
+    if schema_type == "array" and collector is not None:
+        items = schema.get("items", {})
+        if isinstance(items, dict) and _should_create_schema(items):
+            schema_name = _derive_schema_name(items, "item")
+            schema_fields = _schema_to_fields(items, "", 0, collector)
+            final_name = collector.register(
+                schema_name, items.get("description", ""), schema_fields
+            )
+            return [], f"array of {final_name}"
+
+    return [], _render_type(schema)
+
+
 def _extract_request_body(
     request_body: dict | None, collector: SchemaCollector | None = None
 ) -> RequestBody | None:
@@ -311,13 +356,14 @@ def _extract_request_body(
     if not schema:
         return None
 
-    fields = _schema_to_fields(schema, "", 0, collector)
+    fields, body_type = _extract_body_schema(schema, collector)
     example = json_content.get("example") or schema.get("example")
 
     return RequestBody(
         content_type="application/json",
         fields=fields,
         example=example,
+        body_type=body_type,
     )
 
 
@@ -332,7 +378,8 @@ def _extract_responses(
             continue
 
         description = response_spec.get("description", "")
-        fields = []
+        fields: list[Field] = []
+        body_type: str | None = None
         example = None
 
         content = response_spec.get("content", {})
@@ -341,7 +388,7 @@ def _extract_responses(
         if json_content:
             schema = json_content.get("schema", {})
             if schema:
-                fields = _schema_to_fields(schema, "", 0, collector)
+                fields, body_type = _extract_body_schema(schema, collector)
                 example = json_content.get("example") or schema.get("example")
 
         result.append(
@@ -350,6 +397,7 @@ def _extract_responses(
                 description=description,
                 fields=fields,
                 example=example,
+                body_type=body_type,
             )
         )
 
@@ -394,26 +442,40 @@ def _schema_to_fields(
                 has_null = True
                 continue
 
-            if collector is not None:
-                if (
-                    v.get("type") == "object"
-                    or "properties" in v
-                    or "x-schema-name" in v
-                ):
-                    schema_name = _derive_schema_name(
-                        v, prefix.rstrip(".") if prefix else "variant"
+            if collector is not None and v.get("type") == "array":
+                # Array variant: register the inner items (if an object schema)
+                # and inline as `array of ItemsName`. Never register the array
+                # itself — an anonymous `Variant` / `VariantV2` wrapper with a
+                # single phantom `value: array of X` field is exactly the bug.
+                items = v.get("items", {})
+                if isinstance(items, dict) and _should_create_schema(items):
+                    items_name = _derive_schema_name(
+                        items, prefix.rstrip(".") if prefix else "item"
                     )
-                    schema_fields = _schema_to_fields(v, "", 0, collector)
-                    if schema_fields:
-                        final_name = collector.register(
-                            schema_name, v.get("description", ""), schema_fields
-                        )
-                        type_names.append(final_name)
-                    else:
-                        type_names.append(_render_type(v))
+                    items_fields = _schema_to_fields(items, "", 0, collector)
+                    items_final = collector.register(
+                        items_name, items.get("description", ""), items_fields
+                    )
+                    type_names.append(f"array of {items_final}")
+                else:
+                    type_names.append(_render_type(v))
+            elif collector is not None and _should_create_schema(v):
+                schema_name = _derive_schema_name(
+                    v, prefix.rstrip(".") if prefix else "variant"
+                )
+                schema_fields = _schema_to_fields(v, "", 0, collector)
+                if schema_fields:
+                    final_name = collector.register(
+                        schema_name, v.get("description", ""), schema_fields
+                    )
+                    type_names.append(final_name)
                 else:
                     type_names.append(_render_type(v))
             else:
+                # Named enums/primitives inside a union inline as their wire
+                # type (e.g. `one of: string or null`) rather than register a
+                # `{value: ...}` wrapper schema — same reason as the property
+                # and top-level-body paths.
                 type_names.append(_render_type(v))
 
         union_type = f"one of: {', '.join(type_names)}" if type_names else "any"
@@ -509,6 +571,33 @@ def _schema_to_fields(
                 prop_schema, f"{field_name}.", depth + 1, collector
             )
             fields.extend(nested_fields)
+        elif prop_type == "array" and collector is not None:
+            # Register the inner items schema (so it appears in ## Schemas) and
+            # render the property as `array of ItemsName`. Do NOT register a
+            # wrapper schema for the array itself even when it has
+            # x-schema-name — Pydantic RootModel list wrappers serialize as a
+            # bare array on the wire, so the old behavior of synthesizing
+            # `{value: array of X}` produced docs that made consumers write
+            # `.value[]` jq filters against responses that are top-level arrays.
+            items = prop_schema.get("items", {})
+            if isinstance(items, dict) and _should_create_schema(items):
+                schema_name = _derive_schema_name(items, prop_name)
+                schema_fields = _schema_to_fields(items, "", 0, collector)
+                final_name = collector.register(
+                    schema_name, items.get("description", ""), schema_fields
+                )
+                rendered_type = f"array of {final_name}"
+            else:
+                rendered_type = _render_type(prop_schema)
+            fields.append(
+                Field(
+                    name=field_name,
+                    type=rendered_type,
+                    required=is_required,
+                    description=description,
+                    constraints=constraints,
+                )
+            )
         elif collector is not None and _should_create_schema(prop_schema):
             schema_name = _derive_schema_name(prop_schema, prop_name)
             schema_fields = _schema_to_fields(prop_schema, "", 0, collector)
