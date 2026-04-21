@@ -102,12 +102,15 @@ def test_full_pipeline_with_sample_spec(tmp_path: Path) -> None:
     skill_md_content = (result_path / "SKILL.md").read_text()
     assert "reference/users_api_list.md" in skill_md_content
 
-    # Verify tag list file links to endpoint refs
+    # Verify tag list file links to endpoint refs as bare sibling filenames
+    # (the tag list file and the endpoint reference files live side-by-side
+    # in the same `reference/` directory, so no prefix is needed).
     tag_list_file = reference_dir / "users_api_list.md"
     tag_list_content = tag_list_file.read_text()
-    assert "reference/get_users.md" in tag_list_content
-    assert "reference/post_users.md" in tag_list_content
-    assert "reference/get_users_id.md" in tag_list_content
+    assert "|get_users.md|" in tag_list_content
+    assert "|post_users.md|" in tag_list_content
+    assert "|get_users_id.md|" in tag_list_content
+    assert "reference/get_users.md" not in tag_list_content
 
     # Verify reference file content
     get_users_content = (reference_dir / "get_users.md").read_text()
