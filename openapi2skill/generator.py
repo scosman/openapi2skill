@@ -121,7 +121,7 @@ def generate_tag_api_list_md(
         lines.append("")
 
     # Endpoint table
-    lines.append("|Endpoint|Method|Name|Description|API Details URL|")
+    lines.append("|Endpoint|Method|Name|Description|Details File|")
     lines.append("|-|-|-|-|-|")
 
     for endpoint in tag_group.endpoints:
@@ -132,8 +132,10 @@ def generate_tag_api_list_md(
         name = escape_table_cell(endpoint.summary)
         description = truncate_description(escape_table_cell(endpoint.description))
 
+        # The detail file is a sibling of this tag list file (both live in
+        # the same output directory), so emit the bare filename.
         lines.append(
-            f"|`{endpoint.path}`|{endpoint.method}|{name}|{description}|reference/{filename}|"
+            f"|`{endpoint.path}`|{endpoint.method}|{name}|{description}|{filename}|"
         )
 
     lines.append("")

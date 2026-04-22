@@ -670,11 +670,14 @@ def test_generate_tag_api_list_md_basic() -> None:
 
     assert "# Users API" in result
     assert "User management" in result
-    assert "|Endpoint|Method|Name|Description|API Details URL|" in result
+    assert "|Endpoint|Method|Name|Description|Details File|" in result
     assert "`/users`" in result
     assert "GET" in result
     assert "List users" in result
-    assert "reference/get_users.md" in result
+    # Detail files are siblings of the tag list file, so the cell must be a
+    # bare filename with no "reference/" prefix.
+    assert "|get_users.md|" in result
+    assert "reference/get_users.md" not in result
 
 
 def test_generate_tag_api_list_md_without_description() -> None:
