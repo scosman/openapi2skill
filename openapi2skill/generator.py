@@ -121,7 +121,7 @@ def generate_tag_api_list_md(
         lines.append("")
 
     # Endpoint table
-    lines.append("|Endpoint|Method|Name|Description|API Details URL|")
+    lines.append("|Endpoint|Method|Name|Description|Details File|")
     lines.append("|-|-|-|-|-|")
 
     for endpoint in tag_group.endpoints:
@@ -132,8 +132,10 @@ def generate_tag_api_list_md(
         name = escape_table_cell(endpoint.summary)
         description = truncate_description(escape_table_cell(endpoint.description))
 
+        # The detail file is a sibling of this tag list file (both live in
+        # the same output directory), so emit the bare filename.
         lines.append(
-            f"|`{endpoint.path}`|{endpoint.method}|{name}|{description}|reference/{filename}|"
+            f"|`{endpoint.path}`|{endpoint.method}|{name}|{description}|{filename}|"
         )
 
     lines.append("")
@@ -211,7 +213,10 @@ def generate_reference_md(endpoint: Endpoint) -> str:
             lines.append(f"**Content Type:** `{endpoint.request_body.content_type}`")
             lines.append("")
 
-            if endpoint.request_body.fields:
+            if endpoint.request_body.body_type and not endpoint.request_body.fields:
+                lines.append(f"**Body:** {endpoint.request_body.body_type}")
+                lines.append("")
+            elif endpoint.request_body.fields:
                 lines.append("|Field|Type|Required|Description|")
                 lines.append("|-|-|-|-|")
                 for field in endpoint.request_body.fields:
@@ -246,7 +251,10 @@ def generate_reference_md(endpoint: Endpoint) -> str:
                 lines.append(response.description)
                 lines.append("")
 
-            if response.fields:
+            if response.body_type and not response.fields:
+                lines.append(f"**Body:** {response.body_type}")
+                lines.append("")
+            elif response.fields:
                 lines.append("|Field|Type|Description|")
                 lines.append("|-|-|-|")
                 for field in response.fields:

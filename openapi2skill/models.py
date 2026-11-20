@@ -57,6 +57,12 @@ class RequestBody:
     content_type: str
     fields: list["Field"]
     example: dict | None
+    # Set when the body is a top-level non-object (e.g., a Pydantic RootModel
+    # list wrapper that serializes as a bare array on the wire). When set,
+    # `fields` is empty and the generator renders the type inline instead of
+    # a field table — the old behavior synthesized a phantom `value` field,
+    # which made consumers write `.value[]` filters that don't exist.
+    body_type: str | None = None
 
 
 @dataclass
@@ -78,3 +84,5 @@ class Response:
     description: str
     fields: list["Field"]
     example: dict | None
+    # See RequestBody.body_type — same semantics for responses.
+    body_type: str | None = None

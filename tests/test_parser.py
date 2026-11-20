@@ -511,9 +511,12 @@ def test_extract_responses_array_type() -> None:
     endpoints = parser.parse_endpoints(spec)
     responses = endpoints[0].responses
 
-    # Array schema produces a single field describing the array
-    assert len(responses[0].fields) == 1
-    assert responses[0].fields[0].type == "array of string"
+    # Top-level array responses carry their type on `body_type` instead of
+    # synthesizing a phantom `value` field. The old phantom-field behavior
+    # made the generated doc claim the response was `{"value": [...]}` when
+    # on the wire it was a bare array.
+    assert responses[0].fields == []
+    assert responses[0].body_type == "array of string"
 
 
 def test_extract_responses_multiple_status_codes() -> None:
@@ -1482,6 +1485,82 @@ def test_schema_to_fields_oneof_with_object_variants() -> None:
     assert "ErrorResult" in fields[0].type
 
 
+def test_flatten_union_variants_unwraps_nested() -> None:
+    """A oneOf/anyOf wrapper variant is flattened into the parent variant list."""
+    variants = [
+        {"oneOf": [{"x-schema-name": "A", "type": "object"}]},
+        {"type": "null"},
+    ]
+    flat = parser._flatten_union_variants(variants)
+    assert flat == [{"x-schema-name": "A", "type": "object"}, {"type": "null"}]
+
+
+def test_flatten_union_variants_passes_through_concrete() -> None:
+    """Concrete (typed) variants are left untouched, even if they look union-y."""
+    variants = [{"type": "string"}, {"type": "integer"}]
+    assert parser._flatten_union_variants(variants) == variants
+
+
+def test_schema_to_fields_discriminated_union_with_null() -> None:
+    """Pydantic's `anyOf: [{oneOf: [$ref]}, null]` registers the inner schema by
+    name and renders `one of: <Name> or null` — not a doubled `one of: one of`.
+    """
+    collector = parser.SchemaCollector()
+    schema = {
+        "anyOf": [
+            {
+                "oneOf": [
+                    {
+                        "x-schema-name": "JinjaInputTransform",
+                        "type": "object",
+                        "description": "Render via a Jinja2 template.",
+                        "properties": {
+                            "type": {"type": "string", "const": "jinja"},
+                            "template": {"type": "string"},
+                        },
+                        "required": ["template"],
+                    }
+                ]
+            },
+            {"type": "null"},
+        ]
+    }
+
+    fields = parser._schema_to_fields(schema, "input_transform", 0, collector)
+
+    assert fields[0].type == "one of: JinjaInputTransform or null"
+    assert "one of: one of" not in fields[0].type
+    assert "JinjaInputTransform" in {s.name for s in collector.schemas}
+
+
+def test_render_type_discriminated_union_with_null() -> None:
+    """`_render_type` flattens the nested wrapper instead of doubling `one of`."""
+    schema = {
+        "anyOf": [
+            {"oneOf": [{"type": "object", "properties": {"a": {"type": "string"}}}]},
+            {"type": "null"},
+        ]
+    }
+    rendered = parser._render_type(schema)
+    assert rendered == "one of: object or null"
+    assert "one of: one of" not in rendered
+
+
+def test_extract_constraints_const() -> None:
+    """A `const` (Pydantic Literal discriminator) surfaces like a single enum."""
+    assert parser._extract_constraints({"type": "string", "const": "jinja"}) == (
+        "One of: jinja"
+    )
+
+
+def test_extract_constraints_const_yields_to_enum() -> None:
+    """When both are present, the richer enum wins (no duplicate constraint)."""
+    result = parser._extract_constraints(
+        {"type": "string", "enum": ["a", "b"], "const": "a"}
+    )
+    assert result == "One of: a, b"
+
+
 def test_schema_to_fields_without_collector() -> None:
     """Test passing collector=None produces existing behavior."""
     schema = {
@@ -1929,3 +2008,259 @@ def test_nested_oneof_field_in_object_registers_schemas():
     schema_names = [s.name for s in collector.schemas]
     assert "KilnAgentRunConfigProperties" in schema_names
     assert "McpRunConfigProperties" in schema_names
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for the "named non-object schema wrapper" bug.
+#
+# Pydantic `RootModel` list wrappers and `Enum` classes arrive in the OpenAPI
+# spec as named schemas (via `x-schema-name`) on non-object types (array,
+# string, integer). The old renderer synthesized a phantom `{value: ...}`
+# schema around them, so the generated doc claimed e.g. `GET /specs` returned
+# `{"value": [...]}` and `ModelProviderName` was `{"value": string}` — when on
+# the wire both serialize transparently (bare array / bare string). Consumers
+# (human or LLM) then wrote jq filters like `.value[]` and `.priority.value`
+# that fail at runtime.
+# ---------------------------------------------------------------------------
+
+
+def test_top_level_array_response_uses_body_type_not_phantom_value_field() -> None:
+    """`list[Spec]` response should say `array of Spec`, not `{value: array of Spec}`."""
+    spec = {
+        "openapi": "3.0.0",
+        "paths": {
+            "/specs": {
+                "get": {
+                    "responses": {
+                        "200": {
+                            "description": "OK",
+                            "content": {
+                                "application/json": {
+                                    "schema": {
+                                        "type": "array",
+                                        "x-schema-name": "Specs",
+                                        "items": {
+                                            "type": "object",
+                                            "x-schema-name": "Spec",
+                                            "properties": {
+                                                "id": {"type": "string"},
+                                                "name": {"type": "string"},
+                                            },
+                                        },
+                                    }
+                                }
+                            },
+                        }
+                    }
+                }
+            }
+        },
+    }
+
+    endpoints = parser.parse_endpoints(spec)
+    response = endpoints[0].responses[0]
+
+    assert response.fields == []
+    assert response.body_type == "array of Spec"
+
+    # Inner Spec schema still registered for the ## Schemas section; the outer
+    # `Specs` wrapper MUST NOT be registered (would recreate the bug).
+    schema_names = [s.name for s in endpoints[0].schemas]
+    assert "Spec" in schema_names
+    assert "Specs" not in schema_names
+    # And the inner Spec schema renders as its real object fields, not as a
+    # synthesized `{value: ...}` wrapper.
+    spec_schema = next(s for s in endpoints[0].schemas if s.name == "Spec")
+    assert [f.name for f in spec_schema.fields] == ["id", "name"]
+
+
+def test_named_array_property_inlines_does_not_synthesize_wrapper() -> None:
+    """Named array property (`Generators`) renders as `array of PromptGenerator`.
+
+    The Pydantic wrapper type does not get its own `### Generators` schema
+    section — the inner item type does. Old behavior emitted both, with the
+    outer wrapper containing a phantom `value` field.
+    """
+    collector = parser.SchemaCollector()
+    schema = {
+        "type": "object",
+        "properties": {
+            "generators": {
+                "type": "array",
+                "x-schema-name": "Generators",
+                "description": "Available prompt generators.",
+                "items": {
+                    "type": "object",
+                    "x-schema-name": "PromptGenerator",
+                    "properties": {
+                        "id": {"type": "string"},
+                        "name": {"type": "string"},
+                    },
+                },
+            },
+        },
+    }
+
+    fields = parser._schema_to_fields(schema, "", 0, collector)
+
+    gen_field = next(f for f in fields if f.name == "generators")
+    assert gen_field.type == "array of PromptGenerator"
+
+    schema_names = [s.name for s in collector.schemas]
+    assert "PromptGenerator" in schema_names
+    assert "Generators" not in schema_names
+
+
+def test_named_enum_property_inlines_with_constraint() -> None:
+    """Named enum property (`ModelProviderName`) renders inline as `string`.
+
+    The enum arrives as `x-schema-name` on a string type. It must NOT
+    register a `### ModelProviderName` schema (which would contain a phantom
+    `{value: string}` field). The `One of: ...` constraint is preserved on
+    the referencing property.
+    """
+    collector = parser.SchemaCollector()
+    schema = {
+        "type": "object",
+        "properties": {
+            "model_provider_name": {
+                "type": "string",
+                "x-schema-name": "ModelProviderName",
+                "description": "Enumeration of supported providers.",
+                "enum": ["openai", "anthropic", "openrouter"],
+            },
+        },
+    }
+
+    fields = parser._schema_to_fields(schema, "", 0, collector)
+
+    prop = fields[0]
+    assert prop.name == "model_provider_name"
+    assert prop.type == "string"
+    assert "One of: openai, anthropic, openrouter" in prop.constraints
+
+    assert collector.schemas == []
+
+
+def test_named_integer_enum_property_inlines_with_constraint() -> None:
+    """Named int-enum (`Priority`) renders inline as `integer` with `One of: ...`."""
+    collector = parser.SchemaCollector()
+    schema = {
+        "type": "object",
+        "properties": {
+            "priority": {
+                "type": "integer",
+                "x-schema-name": "Priority",
+                "description": "P0 is highest.",
+                "enum": [0, 1, 2, 3],
+            },
+        },
+    }
+
+    fields = parser._schema_to_fields(schema, "", 0, collector)
+
+    prop = fields[0]
+    assert prop.type == "integer"
+    assert "One of: 0, 1, 2, 3" in prop.constraints
+    assert collector.schemas == []
+
+
+def test_should_create_schema_named_array_returns_false() -> None:
+    """x-schema-name on an array must NOT opt into wrapper registration."""
+    schema = {
+        "type": "array",
+        "x-schema-name": "Generators",
+        "items": {"type": "string"},
+    }
+    assert parser._should_create_schema(schema) is False
+
+
+def test_should_create_schema_named_string_enum_returns_false() -> None:
+    """x-schema-name on a string enum must NOT opt into wrapper registration."""
+    schema = {
+        "type": "string",
+        "x-schema-name": "ModelProviderName",
+        "enum": ["openai", "anthropic"],
+    }
+    assert parser._should_create_schema(schema) is False
+
+
+def test_should_create_schema_object_with_x_schema_name_still_true() -> None:
+    """Object types with x-schema-name remain registerable (unchanged behavior)."""
+    schema = {"type": "object", "x-schema-name": "User"}
+    assert parser._should_create_schema(schema) is True
+
+
+def test_anonymous_array_variant_in_one_of_inlines_not_wraps() -> None:
+    """`trace: list[TraceMessage] | None` must render as `array of TraceMessage`.
+
+    Before: the array variant had no x-schema-name, so the old code synthesized
+    an auto-named ``Variant`` / ``VariantV2`` schema with a single phantom
+    ``value: array of TraceMessage`` field (see chat_sessions doc before fix).
+    After: no wrapper schema; items registered; union inlines the array type.
+    """
+    collector = parser.SchemaCollector()
+    schema = {
+        "type": "object",
+        "properties": {
+            "trace": {
+                "anyOf": [
+                    {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "x-schema-name": "TraceMessage",
+                            "properties": {
+                                "role": {"type": "string"},
+                                "content": {"type": "string"},
+                            },
+                        },
+                    },
+                    {"type": "null"},
+                ],
+            },
+        },
+    }
+
+    fields = parser._schema_to_fields(schema, "", 0, collector)
+
+    assert fields[0].name == "trace"
+    assert fields[0].type == "one of: array of TraceMessage or null"
+
+    schema_names = [s.name for s in collector.schemas]
+    assert "TraceMessage" in schema_names
+    assert "Variant" not in schema_names
+    assert "VariantV2" not in schema_names
+
+
+def test_named_enum_in_one_of_does_not_register_wrapper() -> None:
+    """`template: EvalTemplateId | null` union: no `{value: string}` wrapper registered.
+
+    The old behavior registered `EvalTemplateId` as a schema with a single
+    phantom `value: string` field. Like the property-level and body-level
+    paths, union variants that are named primitives/enums must inline their
+    wire type (`string`) instead.
+    """
+    collector = parser.SchemaCollector()
+    schema = {
+        "type": "object",
+        "properties": {
+            "template": {
+                "description": "The template selected when creating this eval.",
+                "anyOf": [
+                    {
+                        "type": "string",
+                        "x-schema-name": "EvalTemplateId",
+                        "enum": ["kiln_requirements", "tool_call", "jailbreak"],
+                    },
+                    {"type": "null"},
+                ],
+            },
+        },
+    }
+
+    fields = parser._schema_to_fields(schema, "", 0, collector)
+
+    assert fields[0].name == "template"
+    assert fields[0].type == "one of: string or null"
+    assert collector.schemas == []
